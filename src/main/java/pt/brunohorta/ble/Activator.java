@@ -5,12 +5,20 @@ import org.osgi.framework.BundleActivator;
 import org.osgi.framework.BundleContext;
 import tinyb.*;
 
+import java.nio.charset.Charset;
+import java.time.Duration;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.Condition;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
 
 
 public class Activator implements BundleActivator {
     private static final String DOOR_BLE_ADDRESS = "F5:73:02:70:37:F2";
     private BluetoothDevice sensor = null;
+    private boolean running;
 
     class ValueNotification implements BluetoothNotification<byte[]> {
         public void run(byte[] tempRaw) {
@@ -90,6 +98,54 @@ public class Activator implements BundleActivator {
         return null;
     }
 
+    public void beacon() throws InterruptedException {
+        System.out.println("----------------  DOOR BLE BEACON OSGI BUNDLE STARTED ------------------");
+        BluetoothManager manager = BluetoothManager.getBluetoothManager();
+
+        boolean discoveryStarted = manager.startDiscovery();
+
+
+        BluetoothDevice sensor = manager.find(null, DOOR_BLE_ADDRESS, null, Duration.ofSeconds(10));
+
+        if (sensor == null) {
+            System.err.println("No sensor found with the provided address.");
+            System.exit(-1);
+        }
+
+        System.out.print("Found device: ");
+        printDevice(sensor);
+
+        Lock lock = new ReentrantLock();
+        Condition cv = lock.newCondition();
+
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            running = false;
+            lock.lock();
+            try {
+                cv.signalAll();
+            } finally {
+                lock.unlock();
+            }
+        }));
+
+        while (running) {
+            Map<Short, byte[]> data = sensor.getManufacturerData();
+            for (Short key : data.keySet()) {
+                System.out.println("SIZE: " + data.get(key).length + " bytes");
+                System.out.println(new String(data.get(key), Charset.forName("utf-8")));
+            }
+            lock.lock();
+            try {
+                cv.await(1, TimeUnit.SECONDS);
+            } finally {
+                lock.unlock();
+            }
+        }
+        sensor.disconnect();
+
+        System.out.println("disconnected");
+    }
+
     static void printDevice(BluetoothDevice device) {
         System.out.print("Address = " + device.getAddress());
         System.out.print(" Name = " + device.getName());
@@ -101,9 +157,7 @@ public class Activator implements BundleActivator {
         for (int i = 0; i < 10; i++) {
             System.out.println("Services exposed by device:");
             BluetoothGattService tempService = null;
-            List<BluetoothGattService> bluetoothServices = null;
-
-            bluetoothServices = device.getServices();
+            List<BluetoothGattService> bluetoothServices = device.getServices();
             if (bluetoothServices == null) {
                 System.out.println("No Services found!");
             } else {
